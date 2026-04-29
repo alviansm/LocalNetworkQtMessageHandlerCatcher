@@ -2,8 +2,6 @@
 #include "ui_MainWindow.h"
 
 #include <QHostAddress>
-#include <QNetworkDatagram>
-#include <QDateTime>
 #include <QScrollBar>
 #include <QMessageBox>
 
@@ -28,10 +26,15 @@ MainWindow::MainWindow(QWidget *parent)
 
     ui->lineEditPort->setPlaceholderText("e.g. 45000");
     ui->lineEditIPAddressInput->setPlaceholderText("e.g. 192.168.1.100");
+    ui->pushButtonConnect->setEnabled(false);
 
-    m_socket = new QUdpSocket(this);
-    connect(m_socket, &QUdpSocket::readyRead,
-            this,     &MainWindow::onDatagramReceived);
+    m_socket = new QTcpSocket(this);
+
+    // These fire only after the TCP three-way handshake completes (or fails),
+    // so they are our natural acknowledgement that the host actually accepted us.
+    connect(m_socket, &QTcpSocket::connected,       this, &MainWindow::onConnected);
+    connect(m_socket, &QTcpSocket::disconnected,    this, &MainWindow::onDisconnected);
+    connect(m_socket, &QTcpSocket::readyRead,        this, &MainWindow::onDataReady);
     connect(m_socket, &QAbstractSocket::errorOccurred,
             this,     &MainWindow::onSocketError);
 
@@ -52,104 +55,75 @@ void MainWindow::setStatus(const QString &text, const QString &color)
         QString("QLabel { color: %1; font-weight: bold; }").arg(color));
 }
 
-bool MainWindow::validateInputs(quint16 &outPort, QHostAddress &outAddr)
+void MainWindow::updateConnectButton()
 {
     // ── Port ──────────────────────────────────────────────────────────────────
-    const QString portText = ui->lineEditPort->text().trimmed();
-    if (portText.isEmpty()) {
-        QMessageBox::warning(this, "Missing port",
-                             "Please enter a port number (e.g. 45000).");
-        ui->lineEditPort->setFocus();
-        return false;
-    }
     bool portOk = false;
-    uint portVal = portText.toUInt(&portOk);
-    if (!portOk || portVal == 0 || portVal > 65535) {
-        QMessageBox::warning(this, "Invalid port",
-                             QString("'%1' is not a valid port number (1-65535).").arg(portText));
-        ui->lineEditPort->setFocus();
-        return false;
-    }
+    const uint portVal = ui->lineEditPort->text().trimmed().toUInt(&portOk);
+    portOk = portOk && portVal > 0 && portVal <= 65535;
+    if (portOk)
+        m_pendingPort = static_cast<quint16>(portVal);
 
     // ── IP address ────────────────────────────────────────────────────────────
-    const QString ipText = ui->lineEditIPAddressInput->text().trimmed();
-    if (ipText.isEmpty()) {
-        QMessageBox::warning(this, "Missing IP address",
-                             "Please enter the IPv4 address of the broadcasting device.");
-        ui->lineEditIPAddressInput->setFocus();
-        return false;
-    }
-    QHostAddress addr(ipText);
-    if (addr.isNull() || addr.protocol() != QAbstractSocket::IPv4Protocol) {
-        QMessageBox::warning(this, "Invalid IP address",
-                             QString("'%1' is not a valid IPv4 address.").arg(ipText));
-        ui->lineEditIPAddressInput->setFocus();
-        return false;
-    }
+    const QHostAddress addr(ui->lineEditIPAddressInput->text().trimmed());
+    const bool addrOk = !addr.isNull()
+                        && addr.protocol() == QAbstractSocket::IPv4Protocol;
+    if (addrOk)
+        m_pendingAddr = addr;
 
-    outPort = static_cast<quint16>(portVal);
-    outAddr = addr;
-    return true;
+    ui->pushButtonConnect->setEnabled(portOk && addrOk);
 }
 
-void MainWindow::bindSocket(quint16 port, const QHostAddress &senderFilter)
+void MainWindow::appendLog(const QString &line, const QString &fromAddr)
 {
-    if (m_socket->state() != QAbstractSocket::UnconnectedState) {
-        m_socket->close();
-        setStatus("Disconnecting...", "gray");
-    }
+    const QString color   = colorForLine(line);
+    const QString escaped = line.toHtmlEscaped();
+    const QString html    = QString(
+                             "<span style=\"color:%1; font-family:monospace;\">%2</span>"
+                             "<span style=\"color:#888888; font-size:small;\"> &nbsp;[from %3]</span>")
+                             .arg(color, escaped, fromAddr);
 
-    // Bind to AnyIPv4 so we receive broadcast packets on any interface.
-    // The senderFilter is applied in onDatagramReceived to only show
-    // traffic coming from the requested source IP.
-    bool ok = m_socket->bind(QHostAddress::AnyIPv4, port,
-                             QUdpSocket::ShareAddress |
-                                 QUdpSocket::ReuseAddressHint);
-    if (ok) {
-        m_port         = port;
-        m_senderFilter = senderFilter;
-        setStatus(QString("Listening on port %1 — filtering for %2")
-                      .arg(port)
-                      .arg(senderFilter.toString()),
-                  "green");
-        ui->pushButtonConnect->setText("Disconnect");
-    } else {
-        const QString err = m_socket->errorString();
-        setStatus(QString("Bind failed: %1").arg(err), "red");
-        QMessageBox::critical(this, "Connection failed",
-                              QString("Could not bind to port %1:\n%2").arg(port).arg(err));
-    }
+    ui->textEdit->append(html);
+
+    QScrollBar *sb = ui->textEdit->verticalScrollBar();
+    sb->setValue(sb->maximum());
 }
 
 // ── slots ─────────────────────────────────────────────────────────────────────
 
-void MainWindow::on_pushButtonConnect_clicked()
+void MainWindow::on_lineEditPort_textEdited(const QString &arg1)
 {
-    // Toggle: if already bound, disconnect
-    if (m_socket->state() != QAbstractSocket::UnconnectedState) {
-        m_socket->close();
-        m_senderFilter.clear();
-        setStatus("Disconnected", "gray");
-        ui->pushButtonConnect->setText("Connect");
-        return;
-    }
-
-    quint16 port;
-    QHostAddress addr;
-    if (!validateInputs(port, addr))
-        return;
-
-    bindSocket(port, addr);
+    Q_UNUSED(arg1)
+    updateConnectButton();
 }
 
 void MainWindow::on_lineEditIPAddressInput_textEdited(const QString &arg1)
 {
     Q_UNUSED(arg1)
+    updateConnectButton();
 }
 
-void MainWindow::on_lineEditPort_textEdited(const QString &arg1)
+void MainWindow::on_pushButtonConnect_clicked()
 {
-    Q_UNUSED(arg1)
+    // Toggle: if already connected or connecting, disconnect
+    if (m_socket->state() != QAbstractSocket::UnconnectedState) {
+        m_socket->abort(); // immediate, no graceful FIN wait
+        // onDisconnected() will handle UI reset
+        return;
+    }
+
+    // Lock fields while attempting connection
+    ui->lineEditPort->setEnabled(false);
+    ui->lineEditIPAddressInput->setEnabled(false);
+    ui->pushButtonConnect->setEnabled(false);
+    setStatus(QString("Connecting to %1:%2 …")
+                  .arg(m_pendingAddr.toString())
+                  .arg(m_pendingPort),
+              "orange");
+
+    // connectToHost() is non-blocking — onConnected() fires when the TCP
+    // handshake succeeds, onSocketError() fires if it fails.
+    m_socket->connectToHost(m_pendingAddr, m_pendingPort);
 }
 
 void MainWindow::on_pushButton_Clear_clicked()
@@ -157,50 +131,64 @@ void MainWindow::on_pushButton_Clear_clicked()
     ui->textEdit->clear();
 }
 
-void MainWindow::onDatagramReceived()
+// ── TCP socket signal handlers ────────────────────────────────────────────────
+
+void MainWindow::onConnected()
 {
-    while (m_socket->hasPendingDatagrams()) {
-        QNetworkDatagram dg = m_socket->receiveDatagram();
-        if (dg.isNull())
-            continue;
+    // TCP three-way handshake completed — the host acknowledged our connection.
+    const QString peer = m_socket->peerAddress().toString()
+                         + ":"
+                         + QString::number(m_socket->peerPort());
+    setStatus(QString("Connected to %1").arg(peer), "green");
+    ui->pushButtonConnect->setText("Disconnect");
+    ui->pushButtonConnect->setEnabled(true);
+}
 
-        // Only accept packets from the requested sender IP
-        if (!m_senderFilter.isNull() &&
-            dg.senderAddress().toIPv4Address() != m_senderFilter.toIPv4Address())
-            continue;
+void MainWindow::onDisconnected()
+{
+    setStatus("Disconnected — host closed the connection", "gray");
+    ui->pushButtonConnect->setText("Connect");
+    ui->lineEditPort->setEnabled(true);
+    ui->lineEditIPAddressInput->setEnabled(true);
+    updateConnectButton(); // restore enabled state based on field content
 
-        const QString raw = QString::fromUtf8(dg.data()).trimmed();
-        if (raw.isEmpty())
-            continue;
+    QMessageBox::information(this, "Disconnected",
+                             "The host closed the connection.");
+}
 
-        const QStringList lines = raw.split('\n', Qt::SkipEmptyParts);
-        for (const QString &line : lines) {
-            const QString sender = dg.senderAddress().toString()
-            + ":"
-                + QString::number(dg.senderPort());
+void MainWindow::onDataReady()
+{
+    const QString peer = m_socket->peerAddress().toString()
+    + ":"
+        + QString::number(m_socket->peerPort());
 
-            const QString color   = colorForLine(line);
-            const QString escaped = line.toHtmlEscaped();
-            const QString html    = QString(
-                                     "<span style=\"color:%1; font-family:monospace;\">%2</span>"
-                                     "<span style=\"color:#888888; font-size:small;\"> &nbsp;[from %3]</span>")
-                                     .arg(color, escaped, sender);
+    // readAll() may contain multiple log lines separated by '\n'
+    const QString raw = QString::fromUtf8(m_socket->readAll()).trimmed();
+    if (raw.isEmpty())
+        return;
 
-            ui->textEdit->append(html);
-        }
-
-        // Auto-scroll to the bottom
-        QScrollBar *sb = ui->textEdit->verticalScrollBar();
-        sb->setValue(sb->maximum());
-    }
+    const QStringList lines = raw.split('\n', Qt::SkipEmptyParts);
+    for (const QString &line : lines)
+        appendLog(line, peer);
 }
 
 void MainWindow::onSocketError(QAbstractSocket::SocketError socketError)
 {
-    Q_UNUSED(socketError)
+    // RemoteHostClosedError fires just before onDisconnected(), let that handle it
+    if (socketError == QAbstractSocket::RemoteHostClosedError)
+        return;
+
     const QString err = m_socket->errorString();
-    setStatus(QString("Socket error: %1").arg(err), "red");
-    QMessageBox::warning(this, "Socket error",
-                         QString("The UDP socket reported an error:\n%1").arg(err));
+    setStatus(QString("Error: %1").arg(err), "red");
+
     ui->pushButtonConnect->setText("Connect");
+    ui->lineEditPort->setEnabled(true);
+    ui->lineEditIPAddressInput->setEnabled(true);
+    updateConnectButton();
+
+    QMessageBox::warning(this, "Connection error",
+                         QString("Could not connect to %1:%2\n\n%3")
+                             .arg(m_pendingAddr.toString())
+                             .arg(m_pendingPort)
+                             .arg(err));
 }

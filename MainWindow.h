@@ -2,7 +2,7 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-#include <QUdpSocket>
+#include <QTcpSocket>
 #include <QHostAddress>
 
 QT_BEGIN_NAMESPACE
@@ -25,19 +25,24 @@ private slots:
     void on_pushButton_Clear_clicked();
     void on_lineEditPort_textEdited(const QString &arg1);
 
-    void onDatagramReceived();
+    // TCP socket signals
+    void onConnected();
+    void onDisconnected();
+    void onDataReady();
     void onSocketError(QAbstractSocket::SocketError socketError);
 
 private:
     void setStatus(const QString &text, const QString &color = "black");
-    bool validateInputs(quint16 &outPort, QHostAddress &outAddr);
-    void bindSocket(quint16 port, const QHostAddress &senderFilter);
+    void updateConnectButton();
+    void appendLog(const QString &line, const QString &fromAddr);
 
     Ui::MainWindow *ui;
 
-    QUdpSocket  *m_socket       = nullptr;
-    quint16      m_port         = 0;
-    QHostAddress m_senderFilter; // Only show datagrams from this IP
+    QTcpSocket  *m_socket      = nullptr;
+
+    // Staging values — populated live as the user types
+    quint16      m_pendingPort = 0;
+    QHostAddress m_pendingAddr;
 };
 
 #endif // MAINWINDOW_H

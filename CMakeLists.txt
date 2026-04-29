@@ -8,6 +8,8 @@ qt_standard_project_setup()
 qt_add_executable(LocalNetworkQtMessageHandlerCatcher
     WIN32 MACOSX_BUNDLE
     main.cpp
+    CommandListDialog.h
+    CommandListDialog.cpp
     MainWindow.cpp
     MainWindow.h
     MainWindow.ui

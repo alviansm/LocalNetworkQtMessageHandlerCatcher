@@ -8,6 +8,9 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QCloseEvent>
+#include <QFileDialog>
+#include <QTextStream>
+#include <QDateTime>
 
 // ── colour-coding by log level ────────────────────────────────────────────────
 static QString colorForLine(const QString &line)
@@ -48,6 +51,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_socket, &QAbstractSocket::errorOccurred, this, &MainWindow::onSocketError);
 
     setStatus("Idle — enter IP and port, then click Connect", "gray");
+
+    // ── Auto-scroll: follow the bottom unless the user scrolls up ─────────────
+    connect(ui->textEdit->verticalScrollBar(), &QScrollBar::valueChanged,
+            this, &MainWindow::onScrollBarValueChanged);
 
     // ── Restore saved state ───────────────────────────────────────────────────
     loadSettings();
@@ -182,8 +189,10 @@ void MainWindow::appendLog(const QString &line, const QString &fromAddr)
 
     ui->textEdit->append(html);
 
-    QScrollBar *sb = ui->textEdit->verticalScrollBar();
-    sb->setValue(sb->maximum());
+    if (m_autoScroll) {
+        QScrollBar *sb = ui->textEdit->verticalScrollBar();
+        sb->setValue(sb->maximum());
+    }
 }
 
 // Shared send logic used by both the main Send button and the dialog's Send.
@@ -212,13 +221,24 @@ void MainWindow::sendCommand(const QString &command)
                              .arg(command.toHtmlEscaped(), peer);
     ui->textEdit->append(echo);
 
-    QScrollBar *sb = ui->textEdit->verticalScrollBar();
-    sb->setValue(sb->maximum());
+    if (m_autoScroll) {
+        QScrollBar *sb = ui->textEdit->verticalScrollBar();
+        sb->setValue(sb->maximum());
+    }
 
     saveCommandHistory(command);
 }
 
 // ── slots — input fields ──────────────────────────────────────────────────────
+
+// Toggle auto-scroll based on whether the vertical scrollbar is at the bottom.
+// • At maximum  → auto-scroll ON  (user scrolled back to the tail)
+// • Below maximum → auto-scroll OFF (user is reading older content)
+void MainWindow::onScrollBarValueChanged(int value)
+{
+    QScrollBar *sb = ui->textEdit->verticalScrollBar();
+    m_autoScroll = (value == sb->maximum());
+}
 
 void MainWindow::on_lineEditPort_textEdited(const QString &arg1)
 {
@@ -352,3 +372,41 @@ void MainWindow::onSocketError(QAbstractSocket::SocketError socketError)
                              .arg(m_pendingPort)
                              .arg(err));
 }
+
+void MainWindow::on_pushButtonSave_clicked()
+{
+    if (ui->textEdit->document()->isEmpty()) {
+        QMessageBox::information(this, "Save Log", "The log is empty — nothing to save.");
+        return;
+    }
+
+    // Suggest a timestamped filename in the user's Documents folder
+    const QString defaultName =
+        QDir::homePath() + "/Documents/log_"
+        + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss")
+        + ".txt";
+
+    const QString filePath = QFileDialog::getSaveFileName(
+        this,
+        tr("Save Log As"),
+        defaultName,
+        tr("Text files (*.txt);;All files (*)"));
+
+    if (filePath.isEmpty())
+        return; // user cancelled
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "Save Log",
+                             tr("Could not open file for writing:\n%1").arg(file.errorString()));
+        return;
+    }
+
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << ui->textEdit->toPlainText();
+    file.close();
+
+    setStatus(tr("Log saved to %1").arg(QFileInfo(filePath).fileName()), "green");
+}
+

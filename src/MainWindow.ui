@@ -16,7 +16,7 @@
   <widget class="QWidget" name="centralwidget">
    <layout class="QVBoxLayout" name="verticalLayout">
     <item>
-     <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,4,2,2,5,2">
+     <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,4,2,2,5,0,2">
       <item>
        <widget class="QLineEdit" name="lineEditPort">
         <property name="placeholderText">
@@ -63,6 +63,13 @@
          </size>
         </property>
        </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButtonSave">
+        <property name="text">
+         <string>Save</string>
+        </property>
+       </widget>
       </item>
       <item>
        <widget class="QPushButton" name="pushButton_Clear">

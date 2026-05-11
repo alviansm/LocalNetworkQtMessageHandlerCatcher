@@ -5,6 +5,7 @@
 #include <QTcpSocket>
 #include <QHostAddress>
 #include <QSettings>
+#include <QFile>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -38,6 +39,10 @@ private slots:
     void on_pushButtonSend_clicked();
     void on_comboBox_editTextChanged(const QString &arg1);
     void on_pushButton_CmdList_clicked();
+    void on_pushButtonSave_clicked();
+
+    // Auto-scroll
+    void onScrollBarValueChanged(int value);
 
 private:
     void setStatus(const QString &text, const QString &color = "black");
@@ -64,6 +69,9 @@ private:
     // Staging values — populated live as the user types
     quint16      m_pendingPort = 0;
     QHostAddress m_pendingAddr;
+
+    // Auto-scroll: true when the scrollbar is pinned to the bottom
+    bool         m_autoScroll  = true;
 
     static constexpr int kMaxCommandHistory = 20;
 };

@@ -16,7 +16,7 @@
   <widget class="QWidget" name="centralwidget">
    <layout class="QVBoxLayout" name="verticalLayout">
     <item>
-     <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,4,2,2,5,0,2">
+     <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,4,0,2,2,5,0,2">
       <item>
        <widget class="QLineEdit" name="lineEditPort">
         <property name="placeholderText">
@@ -28,6 +28,13 @@
        <widget class="QLineEdit" name="lineEditIPAddressInput">
         <property name="placeholderText">
          <string>IP Address</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButtonAutoConnect">
+        <property name="text">
+         <string>Auto Connect</string>
         </property>
        </widget>
       </item>
@@ -130,6 +137,27 @@
          </size>
         </property>
        </spacer>
+      </item>
+      <item>
+       <widget class="QLabel" name="labelSearch">
+        <property name="text">
+         <string>Search</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLineEdit" name="lineEditSearchLog">
+        <property name="placeholderText">
+         <string>Search</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButtonSearchLog">
+        <property name="text">
+         <string>Search</string>
+        </property>
+       </widget>
       </item>
      </layout>
     </item>

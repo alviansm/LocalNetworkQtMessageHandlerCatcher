@@ -50,6 +50,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_socket, &QTcpSocket::readyRead,          this, &MainWindow::onDataReady);
     connect(m_socket, &QAbstractSocket::errorOccurred, this, &MainWindow::onSocketError);
 
+    // ── Auto-connect retry timer ──────────────────────────────────────────────
+    m_autoConnectTimer = new QTimer(this);
+    m_autoConnectTimer->setInterval(kAutoConnectIntervalMs);
+    m_autoConnectTimer->setSingleShot(false);
+    connect(m_autoConnectTimer, &QTimer::timeout, this, &MainWindow::onAutoConnectTimer);
+
     setStatus("Idle — enter IP and port, then click Connect", "gray");
 
     // ── Auto-scroll: follow the bottom unless the user scrolls up ─────────────
@@ -322,10 +328,23 @@ void MainWindow::onConnected()
     ui->pushButtonConnect->setText("Disconnect");
     ui->pushButtonConnect->setEnabled(true);
     updateSendButton();
+
+    // Auto-connect: stop the retry timer (we are now connected), but keep
+    // m_autoConnecting = true so the button still acts as a combined
+    // "Stop & Disconnect" toggle.
+    m_autoConnectTimer->stop();
 }
 
 void MainWindow::onDisconnected()
 {
+    if (m_autoConnecting) {
+        // The host dropped us while auto-connect is active — schedule a retry.
+        setStatus(QString("Auto-connect: host disconnected — retrying in %1 s …")
+                      .arg(kAutoConnectIntervalMs / 1000), "orange");
+        m_autoConnectTimer->start();
+        return;
+    }
+
     setStatus("Disconnected — host closed the connection", "gray");
     ui->pushButtonConnect->setText("Connect");
     ui->lineEditPort->setEnabled(true);
@@ -356,6 +375,15 @@ void MainWindow::onSocketError(QAbstractSocket::SocketError socketError)
 {
     if (socketError == QAbstractSocket::RemoteHostClosedError)
         return;
+
+    if (m_autoConnecting) {
+        // Silently schedule the next attempt — no popup, no state reset.
+        setStatus(QString("Auto-connect: %1 — retrying in %2 s …")
+                      .arg(m_socket->errorString())
+                      .arg(kAutoConnectIntervalMs / 1000), "orange");
+        m_autoConnectTimer->start();
+        return;
+    }
 
     const QString err = m_socket->errorString();
     setStatus(QString("Error: %1").arg(err), "red");
@@ -408,5 +436,141 @@ void MainWindow::on_pushButtonSave_clicked()
     file.close();
 
     setStatus(tr("Log saved to %1").arg(QFileInfo(filePath).fileName()), "green");
+}
+
+
+// ── Auto-connect ──────────────────────────────────────────────────────────────
+
+// Stops auto-connect mode and fully resets the UI to the idle state.
+void MainWindow::stopAutoConnect()
+{
+    m_autoConnecting = false;
+    m_autoConnectTimer->stop();
+
+    // Abort any in-progress connection attempt.
+    if (m_socket->state() != QAbstractSocket::UnconnectedState)
+        m_socket->abort();
+
+    ui->pushButtonAutoConnect->setText("Auto-Connect");
+    ui->pushButtonConnect->setText("Connect");
+    ui->lineEditPort->setEnabled(true);
+    ui->lineEditIPAddressInput->setEnabled(true);
+    ui->pushButtonConnect->setEnabled(true);
+    updateConnectButton();
+    updateSendButton();
+    setStatus("Auto-connect stopped", "gray");
+}
+
+// Called by the retry timer — make one connection attempt.
+void MainWindow::onAutoConnectTimer()
+{
+    // If somehow still in a connecting/connected state, skip this tick.
+    if (m_socket->state() != QAbstractSocket::UnconnectedState) {
+        m_socket->abort();
+        return;
+    }
+    m_socket->connectToHost(m_pendingAddr, m_pendingPort);
+}
+
+void MainWindow::on_pushButtonAutoConnect_clicked()
+{
+    if (m_autoConnecting) {
+        // Second click — cancel auto-connect (and disconnect if connected).
+        stopAutoConnect();
+        return;
+    }
+
+    // Validate host / port before starting.
+    bool portOk = false;
+    const uint portVal = ui->lineEditPort->text().trimmed().toUInt(&portOk);
+    portOk = portOk && portVal > 0 && portVal <= 65535;
+
+    const QHostAddress addr(ui->lineEditIPAddressInput->text().trimmed());
+    const bool addrOk = !addr.isNull()
+                        && addr.protocol() == QAbstractSocket::IPv4Protocol;
+
+    if (!portOk || !addrOk) {
+        QMessageBox::warning(this, "Auto-Connect",
+                             "Please enter a valid IP address and port before"
+                             " starting auto-connect.");
+        return;
+    }
+
+    m_pendingPort = static_cast<quint16>(portVal);
+    m_pendingAddr = addr;
+
+    // Lock the UI input fields (same as the regular Connect button does).
+    m_autoConnecting = true;
+    ui->lineEditPort->setEnabled(false);
+    ui->lineEditIPAddressInput->setEnabled(false);
+    ui->pushButtonConnect->setEnabled(false);
+    ui->pushButtonAutoConnect->setText("Stop Auto-Connect");
+    setStatus(QString("Auto-connect: trying %1:%2 …")
+                  .arg(m_pendingAddr.toString()).arg(m_pendingPort), "orange");
+
+    // Kick off the first attempt immediately.
+    m_socket->connectToHost(m_pendingAddr, m_pendingPort);
+}
+
+
+void MainWindow::on_pushButtonSearchLog_clicked()
+{
+    const QString query = ui->lineEditSearchLog->text().trimmed();
+
+    // ── No query → clear everything ──────────────────────────────────────────
+    if (query.isEmpty()) {
+        m_lastSearchTerm.clear();
+        m_searchMatches.clear();
+        m_searchIndex = -1;
+        ui->labelSearch->setText(QString());
+        // Clear any existing extra selections (highlights)
+        ui->textEdit->setExtraSelections({});
+        return;
+    }
+
+    // ── New query → rebuild the full match list ───────────────────────────────
+    if (query.compare(m_lastSearchTerm, Qt::CaseInsensitive) != 0) {
+        m_lastSearchTerm = query;
+        m_searchMatches.clear();
+        m_searchIndex = -1;
+
+        QTextDocument *doc = ui->textEdit->document();
+        QTextCursor cursor(doc);
+        while (true) {
+            cursor = doc->find(query, cursor, QTextDocument::FindFlags());
+            if (cursor.isNull())
+                break;
+            m_searchMatches.append(cursor);
+        }
+    }
+
+    // ── No matches ────────────────────────────────────────────────────────────
+    if (m_searchMatches.isEmpty()) {
+        ui->labelSearch->setText(tr("No match found"));
+        ui->textEdit->setExtraSelections({});
+        return;
+    }
+
+    // ── Advance to next match (wraps around) ──────────────────────────────────
+    m_searchIndex = (m_searchIndex + 1) % m_searchMatches.size();
+
+    // ── Highlight: yellow background on the current match ─────────────────────
+    QList<QTextEdit::ExtraSelection> selections;
+    {
+        QTextEdit::ExtraSelection sel;
+        sel.format.setBackground(QColor("#FFD700"));   // gold highlight
+        sel.format.setForeground(QColor("#000000"));
+        sel.cursor = m_searchMatches.at(m_searchIndex);
+        selections.append(sel);
+    }
+    ui->textEdit->setExtraSelections(selections);
+
+    // ── Scroll the highlighted match into view ────────────────────────────────
+    ui->textEdit->setTextCursor(m_searchMatches.at(m_searchIndex));
+    ui->textEdit->ensureCursorVisible();
+
+    // ── Update status label ───────────────────────────────────────────────────
+    ui->labelSearch->setText(
+        tr("%1 of %2").arg(m_searchIndex + 1).arg(m_searchMatches.size()));
 }
 
